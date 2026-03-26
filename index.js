@@ -13,11 +13,11 @@ app.post('/analyze', async (req, res) => {
   try {
     // Step 1: Geocode the address
     const geoRes = await fetch(
-      `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_API_KEY}`
-    );
-    const geoData = await geoRes.json();
-    if (!geoData.results.length) return res.status(404).json({ error: 'Address not found' });
-
+  `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_API_KEY}`
+);
+const geoData = await geoRes.json();
+console.log('Geo response:', JSON.stringify(geoData));
+if (!geoData.results.length) return res.status(404).json({ error: 'Address not found', geodata: geoData });
     const { lat, lng } = geoData.results[0].geometry.location;
 
     // Step 2: Get solar data
