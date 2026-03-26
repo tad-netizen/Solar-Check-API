@@ -26,7 +26,7 @@ app.post('/analyze', async (req, res) => {
     const solarRes = await fetch(
       `https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=${lat}&location.longitude=${lng}&requiredQuality=LOW&key=${process.env.GOOGLE_API_KEY}`
     );
-    const solarData = await solarRes.json();
+    const solarData = await solarRes.json();console.log('RAW SOLAR:', JSON.stringify(solarData.solarPotential).substring(0, 2000));
  
     if (solarData.error) {
       return res.status(404).json({ error: 'Solar data not found for this address' });
