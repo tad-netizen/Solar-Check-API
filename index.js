@@ -1,15 +1,15 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
- 
+
 const app = express();
 app.use(cors());
 app.use(express.json());
- 
+
 app.post('/analyze', async (req, res) => {
   const { address } = req.body;
   if (!address) return res.status(400).json({ error: 'Address is required' });
- 
+
   try {
     // Step 1: Geocode the address
     const geoRes = await fetch(
@@ -19,70 +19,68 @@ app.post('/analyze', async (req, res) => {
     if (!geoData.results || !geoData.results.length) {
       return res.status(404).json({ error: 'Address not found' });
     }
- 
+
     const { lat, lng } = geoData.results[0].geometry.location;
- 
+
     // Step 2: Get solar data
     const solarRes = await fetch(
       `https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=${lat}&location.longitude=${lng}&requiredQuality=LOW&key=${process.env.GOOGLE_API_KEY}`
     );
-    const solarData = await solarRes.json();console.log('RAW SOLAR:', JSON.stringify(solarData.solarPotential).substring(0, 2000));
- 
+    const solarData = await solarRes.json();
+
     if (solarData.error) {
       return res.status(404).json({ error: 'Solar data not found for this address' });
     }
- 
+
     const solar = solarData.solarPotential;
- 
-    // Safely extract roof area
-    const roofArea = Math.round(
-      solar.wholeRoofStats?.areaMeters2 ||
-      solar.maxArrayAreaMeters2 ||
-      0
-    );
- 
-    // Safely extract sun hours
-    const maxSunshine = solar.maxSunshineHoursPerYear || solar.panelCapacityWatts || 0;
-    const sunHours = maxSunshine > 8760 ? (maxSunshine / 365) : (maxSunshine > 24 ? maxSunshine / 365 : maxSunshine);
- 
-    // Safely extract panel count
-    const panels = solar.solarPanels?.length ||
-      solar.maxArrayPanelsCount ||
-      Math.floor(roofArea / 2.6) ||
-      0;
- 
-    // Safely extract annual production
-    const annualProduction = Math.round(
-      solar.maxArrayAnnualEnergyKwh ||
-      solar.wholeRoofStats?.sunshineQuantiles?.[5] ||
-      (sunHours * 365 * roofArea * 0.15) ||
-      0
-    );
- 
+
+    // Usable panel area (not total roof area)
+    const usableAreaM2 = Math.round(solar.maxArrayAreaMeters2 || 0);
+
+    // Total roof area for display
+    const totalRoofArea = Math.round(solar.wholeRoofStats?.areaMeters2 || usableAreaM2);
+
+    // Max sunshine hours per year
+    const maxSunshineHours = solar.maxSunshineHoursPerYear || 0;
+
+    // Sun hours per day
+    const sunHoursPerDay = maxSunshineHours / 365;
+
+    // Panel count
+    const panels = solar.maxArrayPanelsCount || Math.floor(usableAreaM2 / 1.7);
+
+    // System size in kW
+    // Standard residential panel is about 400W (0.4kW)
+    const systemSizeKw = panels * 0.4;
+
+    // Annual production in kWh
+    // Formula: system size (kW) x sun hours per day x 365 x efficiency factor (0.8)
+    const annualProduction = Math.round(systemSizeKw * sunHoursPerDay * 365 * 0.8);
+
     // Offset as percentage of typical VA home (10,500 kWh/year)
     const offset = annualProduction > 0 ? Math.min(Math.round((annualProduction / 10500) * 100), 100) : 0;
- 
+
     // Score the property
-    const sunScore = sunHours > 4.5 ? 30 : sunHours > 4 ? 20 : 10;
-    const areaScore = roofArea > 60 ? 35 : roofArea > 40 ? 25 : 15;
-    const productionScore = annualProduction > 10000 ? 35 : annualProduction > 7000 ? 25 : 15;
-    const score = sunScore + areaScore + productionScore;
- 
+    const sunScore = sunHoursPerDay > 4.5 ? 30 : sunHoursPerDay > 4 ? 20 : 10;
+    const areaScore = usableAreaM2 > 80 ? 35 : usableAreaM2 > 50 ? 25 : 15;
+    const productionScore = annualProduction > 15000 ? 35 : annualProduction > 10000 ? 28 : annualProduction > 7000 ? 20 : 12;
+    const score = Math.min(sunScore + areaScore + productionScore, 100);
+
     const title = score >= 85 ? 'Excellent solar candidate' :
                   score >= 70 ? 'Strong solar candidate' :
                   score >= 55 ? 'Good solar candidate' : 'Moderate solar potential';
- 
+
     const desc = score >= 85 ? 'Your roof has strong solar exposure with ample usable area for a full system.' :
                  score >= 70 ? 'Your roof is a solid candidate for solar with good production potential.' :
                  score >= 55 ? 'Your roof has good solar potential. An assessment will confirm the best setup.' :
                  'Your roof has some solar potential. Shading or orientation may limit output.';
- 
+
     const ctaHeading = score >= 55 ? 'Your roof qualifies — here\'s what to do next' :
                        'Want to know for sure? Let\'s take a look';
- 
-    // Step 3: Get aerial image URL
+
+    // Aerial image URL — key stays server-side, URL passed to client
     const aerialImageUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=19&size=640x300&maptype=satellite&key=${process.env.GOOGLE_API_KEY}`;
- 
+
     // Step 4: Ask Claude for a friendly summary
     let friendlyDesc = desc;
     try {
@@ -98,7 +96,7 @@ app.post('/analyze', async (req, res) => {
           max_tokens: 150,
           messages: [{
             role: 'user',
-            content: `You are a friendly solar consultant. Write ONE sentence (max 25 words) describing this home's solar potential. Roof area: ${roofArea}m², sun hours per day: ${sunHours.toFixed(1)}, annual production estimate: ${annualProduction} kWh, score: ${score}/100. Be encouraging and specific.`
+            content: `You are a friendly solar consultant for HmeWorx, a Virginia solar company. Write ONE sentence (max 25 words) describing this home's solar potential. Usable panel area: ${usableAreaM2}m², sun hours per day: ${sunHoursPerDay.toFixed(1)}, estimated annual production: ${annualProduction.toLocaleString()} kWh, panels: ${panels}, score: ${score}/100. Be encouraging and specific. Do not mention price.`
           }]
         })
       });
@@ -109,29 +107,31 @@ app.post('/analyze', async (req, res) => {
     } catch (claudeErr) {
       console.log('Claude error, using default desc:', claudeErr.message);
     }
- 
+
     res.json({
       score,
       title,
       desc: friendlyDesc,
       ctaHeading,
-      roofArea,
-      sunHours: parseFloat(sunHours.toFixed(1)),
+      roofArea: usableAreaM2,
+      totalRoofArea,
+      sunHours: parseFloat(sunHoursPerDay.toFixed(1)),
       annualProduction: annualProduction.toLocaleString(),
+      systemSizeKw: parseFloat(systemSizeKw.toFixed(1)),
       panels,
       offset,
       aerialImageUrl,
       lat,
       lng
     });
- 
+
   } catch (err) {
     console.error('Server error:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
- 
+
 app.get('/', (req, res) => res.send('Solar Checker API is running'));
- 
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
